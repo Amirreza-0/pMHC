@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 import re
 
+from scipy.ndimage import label
+from tqdm.auto import tqdm
+
 # Define a column mapping dictionary to handle different input formats
 COLUMN_MAPPING = {
     # Each key represents the target standardized column name
@@ -17,7 +20,10 @@ COLUMN_MAPPING = {
         'long_mer', 'peptide', 'longmer', 'Long_Mer', 'Peptide_Longer',
         'Peptide', 'icore', 'core_sequence'
     ],
-    'convnext_value': ['value', 'ConvNeXT_value', 'convnext_value', 'prediction', 'score']
+    'convnext_value': ['value', 'ConvNeXT_value', 'convnext_value', 'prediction', 'score'],
+    'log_value': ['true_value', 'log50k'],
+    'binder_state': ['NB', 'label'],
+
 }
 
 def map_columns(df):
@@ -56,7 +62,7 @@ def map_columns(df):
     df.rename(columns=rename_dict, inplace=True)
 
     # After renaming, add any missing required columns with NaN values
-    required_columns = ['allele', 'peptide_length', 'long_mer', '9mer', 'convnext_value']
+    required_columns = ['allele', 'peptide_length', 'long_mer', '9mer', 'log_value', 'binder_state']
     for col in required_columns:
         if col not in df.columns:
             print(f"Warning: No mapping found for '{col}'. Adding with NaN values.")
@@ -68,6 +74,9 @@ def map_columns(df):
         print(f"Duplicate columns detected after renaming: {duplicated_cols}")
         # Drop duplicate columns, keeping the first occurrence
         df = df.loc[:, ~df.columns.duplicated()]
+
+    # add a new column for binding score in binary form
+    df['binding_label'] = np.where(df['log_value'] >= 0.428, 1, 0)
 
     return df
 
@@ -162,198 +171,159 @@ def process_and_combine_datasets(folders):
     return datasets
 
 
-# def get_allele_seq(files, mhc_type=1, species=''):
-#
-#     PMGen_path = "../../database/PMGen/data/HLA_alleles/processed/mmseq_clust"
-#
-#     # Verify that the path exists
-#     if not os.path.exists(PMGen_path):
-#         print(f"Error: The specified path does not exist: {PMGen_path}")
-#         return pd.DataFrame()
-#     if mhc_type==1:
-#         all_files = [f for f in os.listdir(PMGen_path) if f.endswith('.fasta') and 'all_seqs' in f and f[0]!='D']
-#     elif mhc_type==2:
-#         all_files = [f for f in os.listdir(PMGen_path) if f.endswith('.fasta') and 'all_seqs' in f and f[0] == 'D']
-#
-#     if not all_files:
-#         print(f"No matching '.fasta' files found in: {PMGen_path}")
-#         return pd.DataFrame()
-#
-#     print(f"Found {len(all_files)} '.fasta' files to process.")
-#
-#     harmonized_df = pd.DataFrame(columns=['allele', 'mhc_sequence', 'class'])
-#
-#     # Updated regex pattern to capture both Class I and Class II alleles anywhere in the line
-#     pattern = r'(DP|DQ|DR|A|B|C)\*\d+(?::\d+)*(?:[A-Z]?)'
-#
-#     for file in all_files:
-#         file_path = os.path.join(PMGen_path, file)
-#         print(f"Processing file: {file_path}")
-#         with open(file_path, 'r') as f:
-#             lines = f.readlines()
-#             for i, line in enumerate(lines):
-#                 if line.startswith(">"):
-#                     allele_line = line.strip()
-#                     # Search for the allele pattern anywhere in the line
-#                     match = re.search(pattern, allele_line)
-#                     if match:
-#                         raw_allele = match.group()
-#                         print(f"Found allele: {raw_allele} in line: {allele_line}")
-#                         # Clean the allele name
-#                         cleaned_allele = clean_allele(raw_allele)
-#                         # Determine MHC class
-#                         mhc_class = determine_mhc_class(raw_allele)
-#                     else:
-#                         # If no match is found, skip this entry with a debug message
-#                         print(f"No allele match found in line: {allele_line}")
-#                         continue
-#
-#                     # Ensure that the next line exists and is a sequence
-#                     if i + 1 < len(lines):
-#                         sequence = lines[i + 1].strip()
-#                         if sequence.startswith(">"):
-#                             print(f"Warning: Expected sequence after line {i}, but found another header.")
-#                             sequence = ""  # Invalid sequence entry
-#                         else:
-#                             print(
-#                                 f"Extracted sequence for allele {raw_allele}: {sequence[:30]}...")  # Show first 30 chars
-#                     else:
-#                         print(f"Warning: No sequence found for allele {raw_allele} at end of file.")
-#                         sequence = ""
-#
-#                     harmonized_df = harmonized_df._append(
-#                         {'allele': cleaned_allele, 'mhc_sequence': sequence, 'class': mhc_class},
-#                         ignore_index=True
-#                     )
-#
-#     # Remove rows without sequence
-#     initial_count = len(harmonized_df)
-#     harmonized_df = harmonized_df[harmonized_df['mhc_sequence'] != ""]
-#     removed_count = initial_count - len(harmonized_df)
-#     if removed_count > 0:
-#         print(f"Removed {removed_count} rows without sequences.")
-#
-#     # Drop duplicates
-#     before_dedup = len(harmonized_df)
-#     harmonized_df = harmonized_df.drop_duplicates(subset=['allele', 'mhc_sequence'])
-#     deduped_count = before_dedup - len(harmonized_df)
-#     if deduped_count > 0:
-#         print(f"Removed {deduped_count} duplicate rows.")
-#
-#     # Clean the allele column
-#     harmonized_df['allele'] = harmonized_df['allele'].apply(clean_allele)
-#
-#     # Save the harmonized dataset
-#     output_path = "../../database/PMGen/data/harmonized_PMgen_mapping.csv"
-#     harmonized_df.to_csv(output_path, index=False)
-#     print(f"Harmonized PMgen mapping saved to: {output_path}")
-#
-#     # Final count
-#     print(f"Total entries in harmonized mapping: {len(harmonized_df)}")
-#
-#     return harmonized_df
-
-
-
-
-
-
-
-
 def get_MHC_sequences_(alleles, PMGen_harmonized_df):
     """
     Get MHC sequences from PMGen_dataset dataset.
     Expects alleles is a pandas Series of allele names.
     """
-    def get_seq(allele):
-        matching_rows = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'].str.contains(allele, na=False)]
+    unique_alleles = alleles.unique()
+    mapping = {}
+    for allele in tqdm(unique_alleles, desc="Processing alleles"):
+        pattern = re.compile(re.escape(allele))
+        matching_rows = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'].str.contains(pattern, na=False)]
         if not matching_rows.empty:
-            return matching_rows['mhc_sequence'].values[0]
-        return None
-    return alleles.apply(get_seq)
+            allele_set = set(allele)
+            matching_rows = matching_rows.copy()
+            matching_rows['distance'] = matching_rows['simple_allele'].apply(lambda x: len(set(x) - allele_set))
+            mapping[allele] = matching_rows.loc[matching_rows['distance'].idxmin(), 'mhc_sequence']
+        else:
+            mapping[allele] = None
+    return alleles.map(mapping)
 
 
 
 def update_dataset(dataset, PMGen_harmonized_df):
-    """
-    Update the dataset with additional columns and values.
-    """
-    # simplify the allele names from PMGen
-    # if the allele length is longer than 10
-    # remove * and : from the allele names and add HLA- prefix from the PMGen dataset if the length of the value is lower than 15
-    PMGen_harmonized_df['simple_allele'] = PMGen_harmonized_df['simple_allele'].apply(lambda x: 'HLA-' + x.replace('*', '').replace(':', '') if len(x) < 15 else x)
-    dataset['mhc_sequence'] = dataset['allele'].apply(get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df))
-
-
-    # Add a new column 'mhc_sequence' and fill with the MHC sequence from ParseMHCflold
-    dataset['mhc_sequence'] = dataset['allele'].apply(get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df))
-    # Add a new column 'mhc_class' and fill with 'I' or 'II' based on the allele name
-    dataset['mhc_class'] = dataset['allele'].apply(lambda x: 'II' if any(sub in x for sub in ['DP', 'DQ', 'DR']) else 'I')
-    # dataset['matched_allele'] = dataset['allele'].apply(get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df))[0]
-    # dataset['multiple_matches'] = dataset['allele'].apply(get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df))[1]
-
+    # Vectorize simple_allele transformation using pandas string methods
+    mask = PMGen_harmonized_df['simple_allele'].str.len() < 15
+    PMGen_harmonized_df.loc[mask, 'simple_allele'] = (
+        'HLA-' +
+        PMGen_harmonized_df.loc[mask, 'simple_allele']
+        .str.replace(r'\*', '', regex=True)
+        .str.replace(':', '', regex=False)
+    )
+    # Vectorize mhc_class determination
+    dataset['mhc_sequence'] = get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df)
+    dataset['mhc_class'] = np.where(dataset['allele'].str.contains('DP|DQ|DR|DM'), 'II', 'I')
     return dataset
 
 
+def get_MHC_pseudosequences_(alleles, NetMHCpan_df):
+    """
+    Get MHC sequences from PMGen_dataset dataset.
+    Expects alleles is a pandas Series of allele names.
+    """
+    unique_alleles = alleles.unique()
+    mapping = {}
+    for allele in tqdm(unique_alleles, desc="Processing alleles"):
+        pattern = re.compile(re.escape(allele))
+        matching_rows = NetMHCpan_df[NetMHCpan_df[0].str.contains(pattern, na=False)]
+        if not matching_rows.empty:
+            allele_set = set(allele)
+            matching_rows = matching_rows.copy()
+            matching_rows['distance'] = matching_rows[0].apply(lambda x: len(set(x) - allele_set))
+            mapping[allele] = matching_rows.loc[matching_rows['distance'].idxmin(), 1]
+        else:
+            mapping[allele] = None
+    return alleles.map(mapping)
+
+
+
+def update_dataset2(dataset, NetMHCpan_df):
+    # Vectorize simple_allele transformation using pandas string methods
+    mask = NetMHCpan_df[0].str.len() < 15
+    NetMHCpan_df.loc[mask, 0] = (
+        'HLA-' +
+        NetMHCpan_df.loc[mask, 0]
+        .str.replace(':', '', regex=False)
+    )
+    # Vectorize mhc_class determination
+    dataset['netmhcpan_pseudosequence'] = get_MHC_pseudosequences_(dataset['allele'], NetMHCpan_df)
+    dataset['mhc_class'] = np.where(dataset['allele'].str.contains('DP|DQ|DR|DM'), 'II', 'I')
+    return dataset
+
+
+def get_psuedosequence_PMGen(mhc_sequence, PMGen_psuedoseq_dict):
+    """
+    Get the pseudo sequence for the given MHC sequence from the PMGen pseudo sequence dictionary.
+    """
+    # Check if the MHC sequence is present in the dictionary
+    if mhc_sequence in PMGen_psuedoseq_dict:
+        return PMGen_psuedoseq_dict[PMGen_psuedoseq_dict['mhc_sequence'] == mhc_sequence]['pseudo_sequence'].values[0]
+    else:
+        return None
+
+
+def update_dataset_with_PMGen_psuedoseq(dataset, PMGen_psuedoseq_dict):
+    """
+    Update the dataset with additional columns and values.
+    """
+    # Add a new column 'pseudo_sequence' and fill with the pseudo sequence from PMGen
+    dataset['pseudo_sequence'] = dataset['mhc_sequence'].apply(get_psuedosequence_PMGen, args=(PMGen_psuedoseq_dict,))
+    return dataset
+
 
 def main():
-    # # Define folders to process
-    # folders = {
-    #     'test': "../../database/ConvNeXt/test",
-    #     'train': "../../database/ConvNeXt/ms_train_data"
-    # }
-    #
-    # # Output directory for the harmonized files
-    # output_dir = "../../database/ConvNeXt/harmonized_MHC_I"
-    # os.makedirs(output_dir, exist_ok=True)
-    #
-    # # Process and combine datasets
-    # harmonized_datasets = process_and_combine_datasets(folders)
-    #
-    # # Save each dataset separately
-    # for dataset_name, dataset in harmonized_datasets.items():
-    #     # Output file path
-    #     output_file = os.path.join(output_dir, f"harmonized_{dataset_name}_dataset.csv")
-    #
-    #     # Save the harmonized dataset
-    #     dataset.to_csv(output_file, index=False)
-    #     print(f"\nHarmonized '{dataset_name}' dataset saved to: {output_file}")
-    #
-    #     # save the analysis to a file
-    #     analysis_file = os.path.join(output_dir, f"analysis_{dataset_name}.txt")
-    #     with open(analysis_file, 'w') as f:
-    #         f.write(f"Dataset Summary for '{dataset_name}' Dataset:\n")
-    #         f.write(f"Total rows: {len(dataset)}\n\n")
-    #         if 'allele' in dataset.columns:
-    #             f.write("Alleles peptide count:\n")
-    #             f.write(str(dataset['allele'].value_counts(dropna=False)))
-    #         else:
-    #             f.write("No 'allele' column present in the dataset.")
-    #
-    # if 'test' in harmonized_datasets and 'train' in harmonized_datasets:
-    #     test_alleles = set(harmonized_datasets['test']['allele'].dropna().unique())
-    #     train_alleles = set(harmonized_datasets['train']['allele'].dropna().unique())
-    #
-    #     # Alleles exclusive to 'test'
-    #     unique_test_alleles = test_alleles - train_alleles
-    #
-    #     # Convert to a sorted list for better readability
-    #     unique_test_alleles_sorted = sorted(unique_test_alleles)
-    #
-    #     # save to a text file as well
-    #     unique_alleles_txt_file = os.path.join(output_dir, "unique_test_alleles.txt")
-    #     with open(unique_alleles_txt_file, 'w') as f:
-    #         for allele in unique_test_alleles_sorted:
-    #             f.write(f"{allele}\n")
-    #     print(f"Unique alleles exclusive to 'test' saved to: {unique_alleles_txt_file}")
-    #
-    # else:
-    #     print("Both 'test' and 'train' datasets must be processed to identify unique alleles.")
+    # Define folders to process
+    folders = {
+        'test': "../../database/ConvNeXt/test",
+        'train': "../../database/ConvNeXt/ms_train_data"
+    }
+
+    # Output directory for the harmonized files
+    output_dir = "../../database/ConvNeXt/harmonized_MHC_I"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Process and combine datasets
+    harmonized_datasets = process_and_combine_datasets(folders)
+
+    # Save each dataset separately
+    for dataset_name, dataset in harmonized_datasets.items():
+        # Output file path
+        output_file = os.path.join(output_dir, f"harmonized_{dataset_name}_dataset.csv")
+
+        # Save the harmonized dataset
+        dataset.to_csv(output_file, index=False)
+        print(f"\nHarmonized '{dataset_name}' dataset saved to: {output_file}")
+
+        # save the analysis to a file
+        analysis_file = os.path.join(output_dir, f"analysis_{dataset_name}.txt")
+        with open(analysis_file, 'w') as f:
+            f.write(f"Dataset Summary for '{dataset_name}' Dataset:\n")
+            f.write(f"Total rows: {len(dataset)}\n\n")
+            if 'allele' in dataset.columns:
+                f.write("Alleles peptide count:\n")
+                f.write(str(dataset['allele'].value_counts(dropna=False)))
+            else:
+                f.write("No 'allele' column present in the dataset.")
+
+    if 'test' in harmonized_datasets and 'train' in harmonized_datasets:
+        test_alleles = set(harmonized_datasets['test']['allele'].dropna().unique())
+        train_alleles = set(harmonized_datasets['train']['allele'].dropna().unique())
+
+        # Alleles exclusive to 'test'
+        unique_test_alleles = test_alleles - train_alleles
+
+        # Convert to a sorted list for better readability
+        unique_test_alleles_sorted = sorted(unique_test_alleles)
+
+        # save to a text file as well
+        unique_alleles_txt_file = os.path.join(output_dir, "unique_test_alleles.txt")
+        with open(unique_alleles_txt_file, 'w') as f:
+            for allele in unique_test_alleles_sorted:
+                f.write(f"{allele}\n")
+        print(f"Unique alleles exclusive to 'test' saved to: {unique_alleles_txt_file}")
+
+    else:
+        print("Both 'test' and 'train' datasets must be processed to identify unique alleles.")
 
     # load the harmonized PMGen dataset
     PMGen_harmonized_df = pd.read_csv("../../database/PMGen/data/harmonized_PMgen_mapping.csv")
 
-    # load the test and train datasets
+    # select the homo specie and MHC I
+    PMGen_harmonized_df = PMGen_harmonized_df[PMGen_harmonized_df["species"] == "homo"]
+    PMGen_harmonized_df = PMGen_harmonized_df[PMGen_harmonized_df["mhc_class"] == "I"]
+
+    # # load the test and train datasets
     test = pd.read_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_test_dataset.csv")
     train = pd.read_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_train_dataset.csv")
 
@@ -361,12 +331,52 @@ def main():
     test=update_dataset(test, PMGen_harmonized_df)
     train=update_dataset(train, PMGen_harmonized_df)
 
-    # save the updated datasets
-    test.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_test_dataset.csv", index=False)
-    train.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_train_dataset.csv", index=False)
 
     print(test.head())
     print(train.head())
+
+    # # load the NetMHCpan dataset
+    net_mhcpan_path1 = "../../database/NetMHCpan/MHC_pseudo.dat"
+    net_mhcpan_path2 = "../../database/NetMHCpan/pseudosequence.2023.all.X.dat"
+
+    # load the file and concatenate them
+    net_mhcpan1 = pd.read_csv(net_mhcpan_path1, delim_whitespace=True, header=None)
+    net_mhcpan2 = pd.read_csv(net_mhcpan_path2, delim_whitespace=True, header=None)
+    net_mhcpan = pd.concat([net_mhcpan1, net_mhcpan2], ignore_index=True)
+
+
+    test = update_dataset2(test, net_mhcpan)
+
+    if 'binder_state' in test.columns:
+        test['binding_label'] = test.apply(
+            lambda row: row['binder_state'] if pd.notna(row['binder_state']) else row['binder_state'],
+            axis=1
+        )
+
+    pseudo_sequences_dict_path = "../../database/PMGen/data/PMGen_pseudoseq.tsv"
+    pseudo_sequences_dict = pd.read_csv(pseudo_sequences_dict_path)
+
+    # get the pseudo sequence
+    test = update_dataset_with_PMGen_psuedoseq(test, pseudo_sequences_dict)
+
+    test.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_test_dataset.csv", index=False)
+
+    train = update_dataset2(train, net_mhcpan)
+
+    if 'binder_state' in train.columns:
+        train['binding_label'] = train.apply(
+            lambda row: row['binder_state'] if pd.notna(row['binder_state']) else row['binder_state'],
+            axis=1
+        )
+
+    # if log_value exists, fill null binding_labels with log_value >= 0.428 as 1 and 0 otherwise
+    if 'log_value' in train.columns:
+        train['binding_label'] = train['binding_label'].combine_first(train['log_value'].apply(lambda x: 1 if x >= 0.428 else 0))
+
+    train = update_dataset_with_PMGen_psuedoseq(train, pseudo_sequences_dict)
+
+    train.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_train_dataset.csv", index=False)
+
 
 if __name__ == "__main__":
     main()
