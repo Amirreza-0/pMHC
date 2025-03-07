@@ -206,7 +206,6 @@ def create_harmonized_PMgen(PMGen_path_class_I="../../database/PMGen/data/HLA_al
                 print(f"Skipping file with unexpected format: {file}")
                 continue
             allele_characters = parts[0].split('_')
-            # allele_characters = allele_characters[0] # TODO: we are only taking the first allele character for now
             remainder = parts[1]
             specie = remainder.split('_')[0].split('.')[0]
             mhc_class = "II"
