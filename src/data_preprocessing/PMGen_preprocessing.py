@@ -95,15 +95,15 @@ def get_allele_seq_multi(file, mhc_class, specie, allele_characters):
                 if not simple_alleles:
                     print(f"Warning: No simple allele found in header: {current_headers}")
                     continue
-
-                new_row = pd.DataFrame([{
-                    'allele_line': current_headers,
-                    'mhc_sequence': "/".join(current_sequences),
-                    'species': specie,
-                    'mhc_class': mhc_class,
-                    'simple_allele': "-".join(simple_alleles)
-                }])
-                df = pd.concat([df, new_row], ignore_index=True)
+                for i, simple_allele in enumerate(simple_alleles):
+                    new_row = pd.DataFrame([{
+                        'allele_line': current_headers,
+                        'mhc_sequence': current_sequences[i],
+                        'species': specie,
+                        'mhc_class': mhc_class,
+                        'simple_allele': simple_allele
+                    }])
+                    df = pd.concat([df, new_row], ignore_index=True)
             current_headers = line
             current_sequences = []
         else:
@@ -206,6 +206,7 @@ def create_harmonized_PMgen(PMGen_path_class_I="../../database/PMGen/data/HLA_al
                 print(f"Skipping file with unexpected format: {file}")
                 continue
             allele_characters = parts[0].split('_')
+            # allele_characters = allele_characters[0] # TODO: we are only taking the first allele character for now
             remainder = parts[1]
             specie = remainder.split('_')[0].split('.')[0]
             mhc_class = "II"

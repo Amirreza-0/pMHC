@@ -2,7 +2,6 @@ import os
 import pandas as pd
 import numpy as np
 import re
-from tqdm.auto import tqdm
 
 # Define a column mapping dictionary to handle different input formats
 COLUMN_MAPPING = {
@@ -255,76 +254,46 @@ def process_and_combine_datasets(folders):
 #     return harmonized_df
 
 
+
+
+
+
+
+
 def get_MHC_sequences_(alleles, PMGen_harmonized_df):
     """
     Get MHC sequences from PMGen_dataset dataset.
     Expects alleles is a pandas Series of allele names.
     """
-    unique_alleles = alleles.unique()
-    mapping = {}
-    for allele in tqdm(unique_alleles, desc="Processing alleles"):
-        pattern = re.compile(re.escape(allele))
-        matching_rows = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'].str.contains(pattern, na=False)]
+    def get_seq(allele):
+        matching_rows = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'].str.contains(allele, na=False)]
         if not matching_rows.empty:
-            allele_set = set(allele)
-            matching_rows = matching_rows.copy()
-            matching_rows['distance'] = matching_rows['simple_allele'].apply(lambda x: len(set(x) - allele_set))
-            mapping[allele] = matching_rows.loc[matching_rows['distance'].idxmin(), 'mhc_sequence']
-        else:
-            mapping[allele] = None
-    return alleles.map(mapping)
+            return matching_rows['mhc_sequence'].values[0]
+        return None
+    return alleles.apply(get_seq)
 
 
 
 def update_dataset(dataset, PMGen_harmonized_df):
-    # Vectorize simple_allele transformation using pandas string methods
-    mask = PMGen_harmonized_df['simple_allele'].str.len() < 15
-    PMGen_harmonized_df.loc[mask, 'simple_allele'] = (
-        'HLA-' +
-        PMGen_harmonized_df.loc[mask, 'simple_allele']
-        .str.replace(r'\*', '', regex=True)
-        .str.replace(':', '', regex=False)
-    )
-    # Vectorize mhc_class determination
-    dataset['mhc_sequence'] = get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df)
-    dataset['mhc_class'] = np.where(dataset['allele'].str.contains('DP|DQ|DR'), 'II', 'I')
+    """
+    Update the dataset with additional columns and values.
+    """
+    # simplify the allele names from PMGen
+    # if the allele length is longer than 10
+    # remove * and : from the allele names and add HLA- prefix from the PMGen dataset if the length of the value is lower than 15
+    PMGen_harmonized_df['simple_allele'] = PMGen_harmonized_df['simple_allele'].apply(lambda x: 'HLA-' + x.replace('*', '').replace(':', '') if len(x) < 15 else x)
+    dataset['mhc_sequence'] = dataset['allele'].apply(get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df))
+
+
+    # Add a new column 'mhc_sequence' and fill with the MHC sequence from ParseMHCflold
+    dataset['mhc_sequence'] = dataset['allele'].apply(get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df))
+    # Add a new column 'mhc_class' and fill with 'I' or 'II' based on the allele name
+    dataset['mhc_class'] = dataset['allele'].apply(lambda x: 'II' if any(sub in x for sub in ['DP', 'DQ', 'DR']) else 'I')
+    # dataset['matched_allele'] = dataset['allele'].apply(get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df))[0]
+    # dataset['multiple_matches'] = dataset['allele'].apply(get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df))[1]
+
     return dataset
 
-
-def get_MHC_pseudosequences_(alleles, PMGen_harmonized_df):
-    """
-    Get MHC sequences from PMGen_dataset dataset.
-    Expects alleles is a pandas Series of allele names.
-    """
-    unique_alleles = alleles.unique()
-    mapping = {}
-    # for allele in tqdm(unique_alleles, desc="Processing alleles"):
-    #     pattern = re.compile(re.escape(allele))
-    #     matching_rows = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'].str.contains(pattern, na=False)]
-    #     if not matching_rows.empty:
-    #         allele_set = set(allele)
-    #         matching_rows = matching_rows.copy()
-    #         matching_rows['distance'] = matching_rows['simple_allele'].apply(lambda x: len(set(x) - allele_set))
-    #         mapping[allele] = matching_rows.loc[matching_rows['distance'].idxmin(), 'mhc_sequence']
-    #     else:
-    #         mapping[allele] = None
-    return alleles.map(mapping)
-
-
-
-def update_dataset2(dataset, NetMHCpan_harmonized_df):
-    # Vectorize simple_allele transformation using pandas string methods
-    # mask = NetMHCpan_harmonized_df['simple_allele'].str.len() < 15
-    # NetMHCpan_harmonized_df.loc[mask, 'simple_allele'] = (
-    #     'HLA-' +
-    #     NetMHCpan_harmonized_df.loc[mask, 'simple_allele']
-    #     .str.replace(r'\*', '', regex=True)
-    #     .str.replace(':', '', regex=False)
-    # )
-    # # Vectorize mhc_class determination
-    # dataset['mhc_sequence'] = get_MHC_sequences_(dataset['allele'], NetMHCpan_harmonized_df)
-    # dataset['mhc_class'] = np.where(dataset['allele'].str.contains('DP|DQ|DR'), 'II', 'I')
-    return dataset
 
 
 def main():
@@ -382,26 +351,22 @@ def main():
     #     print("Both 'test' and 'train' datasets must be processed to identify unique alleles.")
 
     # load the harmonized PMGen dataset
-    # PMGen_harmonized_df = pd.read_csv("../../database/PMGen/data/harmonized_PMgen_mapping.csv")
-    #
-    # # load the test and train datasets
+    PMGen_harmonized_df = pd.read_csv("../../database/PMGen/data/harmonized_PMgen_mapping.csv")
+
+    # load the test and train datasets
     test = pd.read_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_test_dataset.csv")
     train = pd.read_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_train_dataset.csv")
 
-    #
-    # test=update_dataset(test, PMGen_harmonized_df)
-    # train=update_dataset(train, PMGen_harmonized_df)
-    #
-    # # save the updated datasets
-    # test.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_test_dataset.csv", index=False)
-    # train.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_train_dataset.csv", index=False)
-    #
+
+    test=update_dataset(test, PMGen_harmonized_df)
+    train=update_dataset(train, PMGen_harmonized_df)
+
+    # save the updated datasets
+    test.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_test_dataset.csv", index=False)
+    train.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_train_dataset.csv", index=False)
+
     print(test.head())
     print(train.head())
-
-    # # load the NetMHCpan dataset
-    # TODO
-
 
 if __name__ == "__main__":
     main()
