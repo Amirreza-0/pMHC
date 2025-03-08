@@ -1,0 +1,10 @@
+Conbotnet:
+MHC II
+train: 134865 pos: 55825, unique_alleles: 80 unique_to_train_alleles: 129
+test: 38373 pos: 6179, unique_alleles: 31 unique_to_test_alleles: 0
+
+ConvNext:
+MHC I
+train: 2005995 pos: 380667, unique_alleles: 167, unique_to_train_alleles: 53
+test: 7441 pos: 83, unique_alleles: 38, unique_to_test_alleles: 4
+
