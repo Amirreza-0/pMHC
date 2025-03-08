@@ -73,23 +73,53 @@ test_all = pd.merge(test_all, mhc_seq, on="allele", how="left", suffixes=('', '_
 train = pd.merge(train, mhc_seq, on="allele", how="left", suffixes=('', '_mhc_seq'))
 
 
+def get_simple_allele(allele):
+    # check length of allele
+    if len(allele) != 8:
+        return
+    # Split the allele into gene part and number part
+    gene = allele[:4]  # First 4 characters (e.g., DRB3 or DQA1)
+    numbers = allele[4:]  # Remaining numbers (e.g., 0101 or 0501)
+
+    # Split the numbers into two parts (2 digits each)
+    part1 = numbers[:2]  # First two digits
+    part2 = numbers[2:]  # Last two digits
+
+    # Construct the new format with * and : separators
+    return f"{gene}*{part1}:{part2}"
+
+
 missing_alleles = []
 def get_MHC_sequences_(alleles, PMGen_harmonized_df, specie="homo"):
-    """
-    Get MHC sequences from PMGen_dataset dataset.
-    Expects alleles is a pandas Series of allele names.
-    """
     unique_alleles = alleles.unique()
-    mapping = {}
+    mapping_seq = {}
+    mapping_pseudo = {}
     for allele in tqdm(unique_alleles, desc="Processing alleles"):
-        # check if allele is split by "-", and process for each allele
-        if "-" in allele and specie=="homo":
-            allele_a = allele.split("-")[0]
-            allele_b = allele.split("-")[1]
-            seq_a = get_MHC_sequences_(pd.Series([allele_a]), PMGen_harmonized_df)
-            seq_b = get_MHC_sequences_(pd.Series([allele_b]), PMGen_harmonized_df)
-            mapping[allele] = "/".join([seq_a[0], seq_b[0]])
+        mapping_alelle = allele
+        if "-" in allele and specie == "homo":
+            allele_a = get_simple_allele(allele.split("-")[0])
+            allele_b = get_simple_allele(allele.split("-")[1])
+
+            seq_a, pseudo_a = get_MHC_sequences_(pd.Series([allele_a]), PMGen_harmonized_df)
+            seq_b, pseudo_b = get_MHC_sequences_(pd.Series([allele_b]), PMGen_harmonized_df)
+            mapping_seq[mapping_alelle] = "/".join([seq_a.iloc[0], seq_b.iloc[0]])
+            mapping_pseudo[mapping_alelle] = "/".join([pseudo_a.iloc[0], pseudo_b.iloc[0]])
             continue
+
+        if len(allele) == 8:
+            allele = get_simple_allele(allele)
+
+        exact_matches = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'] == allele]
+        if not exact_matches.empty:
+            if len(exact_matches) > 1:
+                idx = exact_matches['sequence'].str.len().idxmax()
+                mapping_seq[mapping_alelle] = exact_matches.loc[idx, 'sequence']
+                mapping_pseudo[mapping_alelle] = exact_matches.loc[idx, 'pseudo_sequence']
+            else:
+                mapping_seq[mapping_alelle] = exact_matches.iloc[0]['sequence']
+                mapping_pseudo[mapping_alelle] = exact_matches.iloc[0]['pseudo_sequence']
+            continue
+
         pattern = re.compile(re.escape(allele))
         matching_rows = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'].str.contains(pattern, na=False)]
         if not matching_rows.empty:
@@ -97,45 +127,52 @@ def get_MHC_sequences_(alleles, PMGen_harmonized_df, specie="homo"):
             matching_rows = matching_rows.copy()
             matching_rows['distance'] = matching_rows['simple_allele'].apply(lambda x: len(set(x) - allele_set))
 
-            # First try with sequences >= 75 characters
-            filtered_rows = matching_rows[matching_rows['mhc_sequence'].str.len() >= 75]
+            filtered_rows = matching_rows[matching_rows['sequence'].str.len() >= 75]
 
             if not filtered_rows.empty:
-                mapping[allele] = filtered_rows.loc[filtered_rows['distance'].idxmin(), 'mhc_sequence']
+                idx = filtered_rows['distance'].idxmin()
+                mapping_seq[mapping_alelle] = filtered_rows.loc[idx, 'sequence']
+                mapping_pseudo[mapping_alelle] = filtered_rows.loc[idx, 'pseudo_sequence']
             else:
-                # If no sequences with length >= 75, take the 5 longest
-                longest_rows = matching_rows.nlargest(5, 'mhc_sequence').sort_values('distance')
+                matching_rows['mhc_sequence_length'] = matching_rows['sequence'].str.len()
+                longest_rows = matching_rows.sort_values(by='mhc_sequence_length', ascending=False).head(5).sort_values('distance')
                 if not longest_rows.empty:
-                    mapping[allele] = longest_rows.iloc[0]['mhc_sequence']
+                    mapping_seq[mapping_alelle] = longest_rows.iloc[0]['sequence']
+                    mapping_pseudo[mapping_alelle] = longest_rows.iloc[0]['pseudo_sequence']
                 else:
-                    mapping[allele] = np.nan
+                    mapping_seq[mapping_alelle] = np.nan
+                    mapping_pseudo[mapping_alelle] = np.nan
         else:
-            mapping[allele] = np.nan
-    return alleles.map(mapping)
+            mapping_seq[mapping_alelle] = np.nan
+            mapping_pseudo[mapping_alelle] = np.nan
+
+    return alleles.map(mapping_seq), alleles.map(mapping_pseudo)
 
 
-def update_dataset(dataset, PMGen_harmonized_df):
-    # in the "simple_allele" column remove ":" and "*"
-    PMGen_harmonized_df['simple_allele'] = PMGen_harmonized_df['simple_allele'].str.replace("[:*]", "", regex=True)
+def update_dataset(dataset, PMGen_pseudoseq):
+    # clean the dataset['allele'] column, remove : and *
+    dataset['allele'] = dataset['allele'].str.replace(":", "", regex=False)
+    dataset['allele'] = dataset['allele'].str.replace("*", "", regex=False)
+
     # select homo specie
-    PMGen_harmonized_df_homo = PMGen_harmonized_df[PMGen_harmonized_df['species'] == 'homo']
+    PMGen_harmonized_df_homo = PMGen_pseudoseq[PMGen_pseudoseq['species'] == 'homo']
     # select homo, they have D in allele name
-    dataset_homo = dataset[dataset["allele"].str.contains("D")].copy()  # Create a copy instead of a view
+    dataset_homo = dataset[dataset["allele"].str.contains("D")].copy()
+    dataset_mice = dataset[~dataset["allele"].str.contains("D")].copy()  # Create a copy instead of a view
 
     # harmonize_dataset allele names
     # if allele_name contains _ then remove it
-    dataset_homo['allele'] = dataset_homo['allele'].str.replace("_", "", regex=False)
-    dataset_homo['allele'] = dataset_homo['allele'].str.replace("HLA-", "", regex=False)
+    dataset_homo['simple_allele'] = dataset_homo['allele'].str.replace("_", "", regex=False)
+    dataset_homo['simple_allele'] = dataset_homo['simple_allele'].str.replace("HLA-", "", regex=False)
 
     # Vectorize mhc_class determination
-    dataset_homo['mhc_sequence'] = get_MHC_sequences_(dataset_homo['allele'], PMGen_harmonized_df_homo)
+    dataset_homo['mhc_sequence'], dataset_homo['pseudo_sequence'] = get_MHC_sequences_(dataset_homo['simple_allele'], PMGen_harmonized_df_homo)
 
     # do for mice
-    PMGen_harmonized_df_mice = PMGen_harmonized_df[PMGen_harmonized_df['species'] == 'mice']
-    dataset_mice = dataset[dataset["allele"].str.contains("D") == False].copy()  # Create a copy instead of a view
+    PMGen_harmonized_df_mice = PMGen_pseudoseq[PMGen_pseudoseq['species'] == 'mice']
 
     # Vectorize mhc_class determination
-    dataset_mice['mhc_sequence'] = get_MHC_sequences_(dataset_mice['allele'], PMGen_harmonized_df_mice, specie="mice")
+    dataset_mice['mhc_sequence'], dataset_mice['pseudo_sequence'] = get_MHC_sequences_(dataset_mice['allele'], PMGen_harmonized_df_mice, specie="mice")
 
     # Concatenate the datasets
     dataset = pd.concat([dataset_homo, dataset_mice], ignore_index=True)
@@ -148,11 +185,14 @@ def update_dataset(dataset, PMGen_harmonized_df):
     # print number of unique missing alleles
     print("Number of unique missing alleles: ", dataset[dataset['mhc_sequence'].isnull()]['allele'].nunique())
 
+    print("Simple alleles with missing sequences: ", dataset[dataset['mhc_sequence'].isnull()]['allele'].unique())
+
+
     return dataset
 
 
 # get mhc sequence data from PMGen
-PMGen_mapping = pd.read_csv("../../database/PMGen/data/harmonized_PMgen_mapping.csv")
+PMGen_mapping = pd.read_csv("../../database/PMGen/data/PMGen_pseudoseq.csv")
 
 # Update the train and test_all datasets with MHC sequences
 train = update_dataset(train, PMGen_mapping)
