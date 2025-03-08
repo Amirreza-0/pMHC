@@ -179,31 +179,39 @@ def get_MHC_sequences_(alleles, PMGen_harmonized_df):
     unique_alleles = alleles.unique()
     mapping = {}
     for allele in tqdm(unique_alleles, desc="Processing alleles"):
-        pattern = re.compile(re.escape(allele))
-        matching_rows = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'].str.contains(pattern, na=False)]
-        if not matching_rows.empty:
-            allele_set = set(allele)
-            matching_rows = matching_rows.copy()
-            matching_rows['distance'] = matching_rows['simple_allele'].apply(lambda x: len(set(x) - allele_set))
-            mapping[allele] = matching_rows.loc[matching_rows['distance'].idxmin(), 'mhc_sequence']
+        # Exact match first
+        matching_rows = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'] == allele]
+        if matching_rows.empty:
+            # If no exact match, search for contained
+            pattern = re.compile(re.escape(allele))
+            matching_rows = PMGen_harmonized_df[PMGen_harmonized_df['simple_allele'].str.contains(pattern, na=False)]
+            if not matching_rows.empty:
+                allele_set = set(allele)
+                matching_rows = matching_rows.copy()
+                matching_rows['distance'] = matching_rows['simple_allele'].apply(lambda x: len(set(x) - allele_set))
+                mapping[allele] = matching_rows.loc[matching_rows['distance'].idxmin(), 'mhc_sequence']
+            else:
+                mapping[allele] = None
         else:
-            mapping[allele] = None
+            mapping[allele] = matching_rows.iloc[0]['mhc_sequence']
     return alleles.map(mapping)
 
 
 
 def update_dataset(dataset, PMGen_harmonized_df):
-    # Vectorize simple_allele transformation using pandas string methods
-    mask = PMGen_harmonized_df['simple_allele'].str.len() < 15
-    PMGen_harmonized_df.loc[mask, 'simple_allele'] = (
-        'HLA-' +
-        PMGen_harmonized_df.loc[mask, 'simple_allele']
-        .str.replace(r'\*', '', regex=True)
-        .str.replace(':', '', regex=False)
-    )
+    # clean the dataset['allele'] column, remove : and *
+    dataset['allele'] = dataset['allele'].str.replace(":", "", regex=False)
+    dataset['allele'] = dataset['allele'].str.replace("*", "", regex=False)
+    # convert the dataset alleles to star and semicolon format eg. HLA-A0201 > A*02:01
+    dataset['simple_allele'] = dataset['allele'].apply(
+        lambda x: re.sub(r'HLA-([A-Z])?(\d{2})(\d{2})',
+                         lambda m: f"{m.group(1) or 'A'}*{m.group(2)}:{m.group(3)}",
+                         str(x)) if pd.notna(x) else x)
+
+
     # Vectorize mhc_class determination
-    dataset['mhc_sequence'] = get_MHC_sequences_(dataset['allele'], PMGen_harmonized_df)
-    dataset['mhc_class'] = np.where(dataset['allele'].str.contains('DP|DQ|DR|DM'), 'II', 'I')
+    dataset['mhc_sequence'] = get_MHC_sequences_(dataset['simple_allele'], PMGen_harmonized_df)
+    dataset['mhc_class'] = np.where(dataset['simple_allele'].str.contains('DP|DQ|DR|DM'), 'II', 'I')
     return dataset
 
 
@@ -242,23 +250,40 @@ def update_dataset2(dataset, NetMHCpan_df):
     return dataset
 
 
-def get_psuedosequence_PMGen(mhc_sequence, PMGen_psuedoseq_dict):
+def update_dataset_with_PMGen_pseudoseq(dataset, PMGen_pseudoseq_dict):
     """
-    Get the pseudo sequence for the given MHC sequence from the PMGen pseudo sequence dictionary.
-    """
-    # Check if the MHC sequence is present in the dictionary
-    if mhc_sequence in PMGen_psuedoseq_dict:
-        return PMGen_psuedoseq_dict[PMGen_psuedoseq_dict['mhc_sequence'] == mhc_sequence]['pseudo_sequence'].values[0]
-    else:
-        return None
+    Update the dataset with pseudo sequences from PMGen using an efficient lookup approach.
 
+    Parameters:
+    -----------
+    dataset : pd.DataFrame
+        The dataset to update with pseudo sequences
+    PMGen_pseudoseq_dict : pd.DataFrame
+        DataFrame containing sequence to pseudo_sequence mappings
 
-def update_dataset_with_PMGen_psuedoseq(dataset, PMGen_psuedoseq_dict):
+    Returns:
+    --------
+    pd.DataFrame
+        Updated dataset with pseudo_sequence column
     """
-    Update the dataset with additional columns and values.
-    """
-    # Add a new column 'pseudo_sequence' and fill with the pseudo sequence from PMGen
-    dataset['pseudo_sequence'] = dataset['mhc_sequence'].apply(get_psuedosequence_PMGen, args=(PMGen_psuedoseq_dict,))
+    print("Creating pseudo sequence lookup dictionary...")
+    # Create an efficient lookup dictionary once
+    sequence_to_pseudo = dict(zip(
+        PMGen_pseudoseq_dict['sequence'],
+        PMGen_pseudoseq_dict['pseudo_sequence']
+    ))
+
+    # Function to lookup with progress bar for larger datasets
+    def lookup_with_progress(mhc_series):
+        result = pd.Series(index=mhc_series.index, dtype='object')
+        for i, (idx, seq) in enumerate(tqdm(mhc_series.items(), desc="Mapping pseudo sequences")):
+            if pd.notna(seq) and seq in sequence_to_pseudo:
+                result[idx] = sequence_to_pseudo[seq]
+        return result
+
+    # Perform the lookup with progress tracking
+    dataset['pseudo_sequence'] = lookup_with_progress(dataset['mhc_sequence'])
+
     return dataset
 
 
@@ -354,10 +379,13 @@ def main():
         )
 
     pseudo_sequences_dict_path = "../../database/PMGen/data/PMGen_pseudoseq.tsv"
-    pseudo_sequences_dict = pd.read_csv(pseudo_sequences_dict_path)
+    pseudo_sequences_dict = pd.read_csv(pseudo_sequences_dict_path, sep="\t")
+
+    # remove "-" from the pseudo_sequence column
+    pseudo_sequences_dict["sequence"] = pseudo_sequences_dict["sequence"].str.replace("-", "")
 
     # get the pseudo sequence
-    test = update_dataset_with_PMGen_psuedoseq(test, pseudo_sequences_dict)
+    test = update_dataset_with_PMGen_pseudoseq(test, pseudo_sequences_dict)
 
     test.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_test_dataset.csv", index=False)
 
@@ -373,7 +401,7 @@ def main():
     if 'log_value' in train.columns:
         train['binding_label'] = train['binding_label'].combine_first(train['log_value'].apply(lambda x: 1 if x >= 0.428 else 0))
 
-    train = update_dataset_with_PMGen_psuedoseq(train, pseudo_sequences_dict)
+    train = update_dataset_with_PMGen_pseudoseq(train, pseudo_sequences_dict)
 
     train.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_train_dataset.csv", index=False)
 
