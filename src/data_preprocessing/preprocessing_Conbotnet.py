@@ -1,4 +1,5 @@
 # load all data based on the .yaml file
+import os
 import re
 import pandas as pd
 import numpy as np
@@ -31,6 +32,8 @@ test_all = pd.merge(test, test_binary, on=["allele", "peptide"], how="outer", su
 
 # Add binding data based on the allele column
 binding.columns = ["id", "allele", "mhc_pseudosequence", "peptide", "9mer"]
+# drop the id column
+binding.drop(columns="id", inplace=True)
 test_all = pd.merge(test_all, binding, on="allele", how="outer", suffixes=('', '_binding'))
 
 # remove duplicates with the same allele and peptide
@@ -94,16 +97,18 @@ def get_MHC_sequences_(alleles, PMGen_harmonized_df, specie="homo"):
     unique_alleles = alleles.unique()
     mapping_seq = {}
     mapping_pseudo = {}
+    mapping_id = {}
     for allele in tqdm(unique_alleles, desc="Processing alleles"):
         mapping_alelle = allele
         if "-" in allele and specie == "homo":
             allele_a = get_simple_allele(allele.split("-")[0])
             allele_b = get_simple_allele(allele.split("-")[1])
 
-            seq_a, pseudo_a = get_MHC_sequences_(pd.Series([allele_a]), PMGen_harmonized_df)
-            seq_b, pseudo_b = get_MHC_sequences_(pd.Series([allele_b]), PMGen_harmonized_df)
+            seq_a, pseudo_a, id_a = get_MHC_sequences_(pd.Series([allele_a]), PMGen_harmonized_df)
+            seq_b, pseudo_b, id_b = get_MHC_sequences_(pd.Series([allele_b]), PMGen_harmonized_df)
             mapping_seq[mapping_alelle] = "/".join([seq_a.iloc[0], seq_b.iloc[0]])
             mapping_pseudo[mapping_alelle] = "/".join([pseudo_a.iloc[0], pseudo_b.iloc[0]])
+            mapping_id[mapping_alelle] = ";;".join([id_a.iloc[0], id_b.iloc[0]])
             continue
 
         if len(allele) == 8:
@@ -115,9 +120,12 @@ def get_MHC_sequences_(alleles, PMGen_harmonized_df, specie="homo"):
                 idx = exact_matches['sequence'].str.len().idxmax()
                 mapping_seq[mapping_alelle] = exact_matches.loc[idx, 'sequence']
                 mapping_pseudo[mapping_alelle] = exact_matches.loc[idx, 'pseudo_sequence']
+                mapping_id[mapping_alelle] = exact_matches.iloc[idx, 'allele']
             else:
                 mapping_seq[mapping_alelle] = exact_matches.iloc[0]['sequence']
                 mapping_pseudo[mapping_alelle] = exact_matches.iloc[0]['pseudo_sequence']
+                mapping_id[mapping_alelle] = exact_matches.iloc[0]['allele']
+
             continue
 
         pattern = re.compile(re.escape(allele))
@@ -133,12 +141,14 @@ def get_MHC_sequences_(alleles, PMGen_harmonized_df, specie="homo"):
                 idx = filtered_rows['distance'].idxmin()
                 mapping_seq[mapping_alelle] = filtered_rows.loc[idx, 'sequence']
                 mapping_pseudo[mapping_alelle] = filtered_rows.loc[idx, 'pseudo_sequence']
+                mapping_id[mapping_alelle] = filtered_rows.loc[idx, 'allele']
             else:
                 matching_rows['mhc_sequence_length'] = matching_rows['sequence'].str.len()
                 longest_rows = matching_rows.sort_values(by='mhc_sequence_length', ascending=False).head(5).sort_values('distance')
                 if not longest_rows.empty:
                     mapping_seq[mapping_alelle] = longest_rows.iloc[0]['sequence']
                     mapping_pseudo[mapping_alelle] = longest_rows.iloc[0]['pseudo_sequence']
+                    mapping_id[mapping_alelle] = longest_rows.iloc[0]['allele']
                 else:
                     mapping_seq[mapping_alelle] = np.nan
                     mapping_pseudo[mapping_alelle] = np.nan
@@ -146,7 +156,7 @@ def get_MHC_sequences_(alleles, PMGen_harmonized_df, specie="homo"):
             mapping_seq[mapping_alelle] = np.nan
             mapping_pseudo[mapping_alelle] = np.nan
 
-    return alleles.map(mapping_seq), alleles.map(mapping_pseudo)
+    return alleles.map(mapping_seq), alleles.map(mapping_pseudo), alleles.map(mapping_id)
 
 
 def update_dataset(dataset, PMGen_pseudoseq):
@@ -166,13 +176,13 @@ def update_dataset(dataset, PMGen_pseudoseq):
     dataset_homo['simple_allele'] = dataset_homo['simple_allele'].str.replace("HLA-", "", regex=False)
 
     # Vectorize mhc_class determination
-    dataset_homo['mhc_sequence'], dataset_homo['pseudo_sequence'] = get_MHC_sequences_(dataset_homo['simple_allele'], PMGen_harmonized_df_homo)
+    dataset_homo['mhc_sequence'], dataset_homo['PMGen_pseudo_sequence'], dataset_homo['PMGen_id'] = get_MHC_sequences_(dataset_homo['simple_allele'], PMGen_harmonized_df_homo)
 
     # do for mice
     PMGen_harmonized_df_mice = PMGen_pseudoseq[PMGen_pseudoseq['species'] == 'mice']
 
     # Vectorize mhc_class determination
-    dataset_mice['mhc_sequence'], dataset_mice['pseudo_sequence'] = get_MHC_sequences_(dataset_mice['allele'], PMGen_harmonized_df_mice, specie="mice")
+    dataset_mice['mhc_sequence'], dataset_mice['PMGen_pseudo_sequence'],  dataset_mice['PMGen_id']= get_MHC_sequences_(dataset_mice['allele'], PMGen_harmonized_df_mice, specie="mice")
 
     # Concatenate the datasets
     dataset = pd.concat([dataset_homo, dataset_mice], ignore_index=True)
@@ -187,6 +197,9 @@ def update_dataset(dataset, PMGen_pseudoseq):
 
     print("Simple alleles with missing sequences: ", dataset[dataset['mhc_sequence'].isnull()]['allele'].unique())
 
+    dataset.rename(columns={"peptide": "long_mer"}, inplace=True)
+    # remove duplicates with the same mhc sequence and 9mer
+    dataset = dataset.drop_duplicates(subset=['mhc_sequence', 'long_mer'])
 
     return dataset
 
@@ -199,5 +212,37 @@ train = update_dataset(train, PMGen_mapping)
 test_all = update_dataset(test_all, PMGen_mapping)
 
 # Save the updated train and test_all datasets to CSV files
+if not os.path.exists('../../database/PMGen_data'):
+    os.makedirs('../../database/PMGen_data')
 train.to_csv(dataset_path + "/processed/train.csv", index=False)
 test_all.to_csv(dataset_path + "/processed/test_all.csv", index=False)
+
+# Analysis of train and test_all datasets
+analysis_results = []
+analysis_results.append("Train dataset analysis:")
+analysis_results.append(f"Total peptides: {len(train)}")
+analysis_results.append(f"Unique alleles: {train['allele'].nunique()}")
+analysis_results.append(f"Total allele entries: {len(train['allele'])}")
+analysis_results.append("Peptide count per allele:")
+analysis_results.append(train['allele'].value_counts().to_string())
+analysis_results.append("")
+analysis_results.append("Test_all dataset analysis:")
+analysis_results.append(f"Total peptides: {len(test_all)}")
+analysis_results.append(f"Unique alleles: {test_all['allele'].nunique()}")
+analysis_results.append(f"Total allele entries: {len(test_all['allele'])}")
+analysis_results.append("Peptide count per allele:")
+analysis_results.append(test_all['allele'].value_counts().to_string())
+
+unique_train_only = set(train['allele'].dropna().unique()) - set(test_all['allele'].dropna().unique())
+unique_test_only = set(test_all['allele'].dropna().unique()) - set(train['allele'].dropna().unique())
+analysis_results.append("")
+analysis_results.append(f"Alleles only in Train: {len(unique_train_only)}")
+analysis_results.append(f"Alleles only in Test_all: {len(unique_test_only)}")
+
+analysis_text = "\n".join(analysis_results)
+
+analysis_output_path = "../../database/Conbotnet/processed/dataset_analysis.txt"
+with open(analysis_output_path, "w") as f:
+    f.write(analysis_text)
+
+print(f"Analysis saved to: {analysis_output_path}")

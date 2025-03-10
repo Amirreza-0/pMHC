@@ -264,25 +264,34 @@ def update_dataset_with_PMGen_pseudoseq(dataset, PMGen_pseudoseq_dict):
     Returns:
     --------
     pd.DataFrame
-        Updated dataset with pseudo_sequence column
+        Updated dataset with pseudo_sequence and PMGen_id columns
     """
     print("Creating pseudo sequence lookup dictionary...")
-    # Create an efficient lookup dictionary once
+    # Create efficient lookup dictionaries once
     sequence_to_pseudo = dict(zip(
         PMGen_pseudoseq_dict['sequence'],
         PMGen_pseudoseq_dict['pseudo_sequence']
     ))
 
+    sequence_to_allele = dict(zip(
+        PMGen_pseudoseq_dict['sequence'],
+        PMGen_pseudoseq_dict['allele']
+    ))
+
     # Function to lookup with progress bar for larger datasets
     def lookup_with_progress(mhc_series):
-        result = pd.Series(index=mhc_series.index, dtype='object')
+        pseudo_result = pd.Series(index=mhc_series.index, dtype='object')
+        allele_result = pd.Series(index=mhc_series.index, dtype='object')
+
         for i, (idx, seq) in enumerate(tqdm(mhc_series.items(), desc="Mapping pseudo sequences")):
             if pd.notna(seq) and seq in sequence_to_pseudo:
-                result[idx] = sequence_to_pseudo[seq]
-        return result
+                pseudo_result[idx] = sequence_to_pseudo[seq]
+                allele_result[idx] = sequence_to_allele[seq]
+
+        return pseudo_result, allele_result
 
     # Perform the lookup with progress tracking
-    dataset['pseudo_sequence'] = lookup_with_progress(dataset['mhc_sequence'])
+    dataset['PMGen_pseudo_sequence'], dataset['PMGen_id'] = lookup_with_progress(dataset['mhc_sequence'])
 
     return dataset
 
@@ -378,14 +387,21 @@ def main():
             axis=1
         )
 
-    pseudo_sequences_dict_path = "../../database/PMGen/data/PMGen_pseudoseq.tsv"
-    pseudo_sequences_dict = pd.read_csv(pseudo_sequences_dict_path, sep="\t")
+    pseudo_sequences_dict_path = "../../database/PMGen/data/PMGen_pseudoseq.csv"
+    pseudo_sequences_dict = pd.read_csv(pseudo_sequences_dict_path)
 
     # remove "-" from the pseudo_sequence column
+    print(pseudo_sequences_dict.columns)
     pseudo_sequences_dict["sequence"] = pseudo_sequences_dict["sequence"].str.replace("-", "")
 
     # get the pseudo sequence
     test = update_dataset_with_PMGen_pseudoseq(test, pseudo_sequences_dict)
+
+    # rename peptide to long_mer
+    test.rename(columns={"peptide": "long_mer"}, inplace=True)
+
+    # remove duplicates with the same mhc sequence and 9mer
+    test = test.drop_duplicates(subset=['mhc_sequence', '9mer'])
 
     test.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_test_dataset.csv", index=False)
 
@@ -402,6 +418,11 @@ def main():
         train['binding_label'] = train['binding_label'].combine_first(train['log_value'].apply(lambda x: 1 if x >= 0.428 else 0))
 
     train = update_dataset_with_PMGen_pseudoseq(train, pseudo_sequences_dict)
+
+    # rename peptide to long_mer
+    train.rename(columns={"peptide": "long_mer"}, inplace=True)
+    # remove duplicates with the same mhc sequence and 9mer
+    train = train.drop_duplicates(subset=['mhc_sequence', '9mer'])
 
     train.to_csv("../../database/ConvNeXt/harmonized_MHC_I/harmonized_train_dataset.csv", index=False)
 
